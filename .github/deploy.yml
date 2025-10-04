@@ -1,0 +1,61 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      #-----------------------------------
+      # 1. コードチェックアウト
+      #-----------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      #-----------------------------------
+      # 2. Azure ログイン
+      #-----------------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      # 👇 secrets.AZURE_CREDENTIALS の作り方は後述
+
+      #-----------------------------------
+      # 3. ACR にログイン
+      #-----------------------------------
+      - name: Login to Azure Container Registry
+        run: az acr login --name myacaregistry1234
+
+      #-----------------------------------
+      # 4. Docker ビルド & プッシュ
+      #-----------------------------------
+      - name: Build and Push Docker image
+        run: |
+          docker build -t myacaregistry1234.azurecr.io/myapp:latest ./app
+          docker push myacaregistry1234.azurecr.io/myapp:latest
+
+      #-----------------------------------
+      # 5. Terraform セットアップ
+      #-----------------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.0
+
+      #-----------------------------------
+      # 6. Terraform Init
+      #-----------------------------------
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      #-----------------------------------
+      # 7. Terraform Apply
+      #-----------------------------------
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: ./terraform
