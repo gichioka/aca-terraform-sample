@@ -1,0 +1,111 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  RESOURCE_GROUP: aca-rg
+  CONTAINER_APP: myapp
+  ACR_NAME: myacaregistry1234
+  IMAGE_NAME: myapp
+  IMAGE_TAG: latest
+  LOCATION: japaneast
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # --------------------------
+      # 1️⃣ コードのチェックアウト
+      # --------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --------------------------
+      # 2️⃣ Azure にログイン
+      # --------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # --------------------------
+      # 3️⃣ Terraform セットアップ
+      # --------------------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      # --------------------------
+      # 4️⃣ Terraform 初期化＆適用
+      # --------------------------
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        id: tfapply
+        run: terraform apply -auto-approve
+        working-directory: ./terraform
+
+      # --------------------------
+      # 5️⃣ Terraform Output を取得
+      # --------------------------
+      - name: Get Terraform outputs
+        id: tfoutputs
+        run: |
+          echo "ACR_SERVER=$(terraform output -raw acr_login_server)" >> $GITHUB_ENV
+          echo "APP_NAME=$(terraform output -raw container_app_name)" >> $GITHUB_ENV
+          echo "APP_RG=$(terraform output -raw container_app_rg)" >> $GITHUB_ENV
+        working-directory: ./terraform
+
+      # --------------------------
+      # 6️⃣ Docker Build & Push
+      # --------------------------
+      - name: Log in to ACR
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and Push image
+        run: |
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+      # --------------------------
+      # 7️⃣ ACA が存在するか確認して更新 or 初回スキップ
+      # --------------------------
+      - name: Check if ACA exists
+        id: checkaca
+        run: |
+          if az containerapp show -n ${{ env.CONTAINER_APP }} -g ${{ env.RESOURCE_GROUP }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_ENV
+          else
+            echo "exists=false" >> $GITHUB_ENV
+          fi
+
+      # --------------------------
+      # 8️⃣ ACA 更新（2回目以降のみ）
+      # --------------------------
+      - name: Update Container App Image
+        if: env.exists == 'true'
+        run: |
+          az containerapp update \
+            -n ${{ env.CONTAINER_APP }} \
+            -g ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+      # --------------------------
+      # 9️⃣ デプロイ完了メッセージ
+      # --------------------------
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment complete!"
+          echo "App: https://${{ env.CONTAINER_APP }}.${{ env.LOCATION }}.azurecontainerapps.io"

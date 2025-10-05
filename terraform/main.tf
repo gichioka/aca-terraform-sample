@@ -1,8 +1,10 @@
 terraform {
+  required_version = ">= 1.9.5"
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~>3.0"
+      version = ">= 3.109.0"
     }
   }
 }
@@ -12,98 +14,65 @@ provider "azurerm" {
   subscription_id = "7e18b982-9600-4203-966d-41ecbbe194e8"
 }
 
-
-#==============================
-# Resource Group
-#==============================
 resource "azurerm_resource_group" "rg" {
   name     = "aca-rg"
   location = "japaneast"
 }
 
-#==============================
-# Azure Container Registry (ACR)
-#==============================
 resource "azurerm_container_registry" "acr" {
-  name                = "myacaregistry1234"   # ※世界でユニークな名前に変更して！
+  name                = "myacaregistry1234"
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   sku                 = "Basic"
   admin_enabled       = true
 }
 
-#==============================
-# Container Apps Environment
-#==============================
 resource "azurerm_container_app_environment" "env" {
-  name                = "aca-env"
+  name                = "myapp-env"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 }
 
-#==============================
-# Container App (ACA)
-#==============================
 resource "azurerm_container_app" "app" {
   name                         = "myapp"
-  container_app_environment_id = azurerm_container_app_environment.env.id
   resource_group_name          = azurerm_resource_group.rg.name
+  container_app_environment_id = azurerm_container_app_environment.env.id
   revision_mode                = "Single"
 
-  # 👇 ACRパスワードをSecretとして登録
-  secret {
-    name  = "acr-password"
-    value = azurerm_container_registry.acr.admin_password
-  }
-
-  # 👇 ACRの認証設定（password → password_secret_name に変更済）
-  registry {
-    server               = azurerm_container_registry.acr.login_server
-    username             = azurerm_container_registry.acr.admin_username
-    password_secret_name = "acr-password"
-  }
-
-  # 👇 コンテナ定義
   template {
     container {
       name   = "myapp"
-      image  = "${azurerm_container_registry.acr.login_server}/myapp:latest"
-      cpu    = 0.5
-      memory = "1Gi"
+      image  = "nginx:latest"
+      cpu    = 0.25
+      memory = "0.5Gi"
     }
   }
 
-  # 👇 外部アクセスを有効化
   ingress {
     external_enabled = true
-    target_port      = 8080
-
-    traffic_weight {
-      latest_revision = true
-      percentage      = 100
-    }
+    target_port      = 80
   }
-}
-
-#==============================
-# Output
-#==============================
-output "container_app_url" {
-  value = azurerm_container_app.app.latest_revision_fqdn
-}
-
-output "acr_name" {
-  value = azurerm_container_registry.acr.name
+  traffic_weight {
+    latest_revision = true
+    percentage      = 100
+  }
+  tags = {
+    environment = "dev"
+  }
 }
 
 output "acr_login_server" {
   value = azurerm_container_registry.acr.login_server
 }
 
-output "resource_group" {
+output "container_app_name" {
+  value = azurerm_container_app.app.name
+}
+
+output "container_app_rg" {
   value = azurerm_resource_group.rg.name
 }
 
-output "aca_name" {
-  value = azurerm_container_app.app.name
+output "container_app_env_id" {
+  value = azurerm_container_app_environment.env.id
 }
