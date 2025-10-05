@@ -2,60 +2,80 @@ name: Deploy to Azure Container Apps
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      #-----------------------------------
+      # -------------------------------
       # 1. コードチェックアウト
-      #-----------------------------------
+      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      #-----------------------------------
-      # 2. Azure ログイン
-      #-----------------------------------
+      # -------------------------------
+      # 2. Azure にログイン (OIDC)
+      # -------------------------------
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-      # 👇 secrets.AZURE_CREDENTIALS の作り方は後述
 
-      #-----------------------------------
-      # 3. ACR にログイン
-      #-----------------------------------
-      - name: Login to Azure Container Registry
-        run: az acr login --name myacaregistry1234
-
-      #-----------------------------------
-      # 4. Docker ビルド & プッシュ
-      #-----------------------------------
-      - name: Build and Push Docker image
-        run: |
-          docker build -t myacaregistry1234.azurecr.io/myapp:latest ./app
-          docker push myacaregistry1234.azurecr.io/myapp:latest
-
-      #-----------------------------------
-      # 5. Terraform セットアップ
-      #-----------------------------------
+      # -------------------------------
+      # 3. Terraform セットアップ
+      # -------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.0
+          terraform_version: 1.9.5
 
-      #-----------------------------------
-      # 6. Terraform Init
-      #-----------------------------------
+      # -------------------------------
+      # 4. Terraform 実行 (infra作成)
+      # -------------------------------
       - name: Terraform Init
+        working-directory: ./terraform
         run: terraform init
-        working-directory: ./terraform
 
-      #-----------------------------------
-      # 7. Terraform Apply
-      #-----------------------------------
       - name: Terraform Apply
-        run: terraform apply -auto-approve
         working-directory: ./terraform
+        run: terraform apply -auto-approve
+
+      # -------------------------------
+      # 5. Terraform Output 取得 (ACR名)
+      # -------------------------------
+      - name: Get Terraform Outputs
+        id: tfoutput
+        working-directory: ./terraform
+        run: |
+          echo "ACR_NAME=$(terraform output -raw acr_name)" >> $GITHUB_ENV
+          echo "ACR_LOGIN_SERVER=$(terraform output -raw acr_login_server)" >> $GITHUB_ENV
+          echo "RESOURCE_GROUP=$(terraform output -raw resource_group)" >> $GITHUB_ENV
+          echo "ACA_NAME=$(terraform output -raw aca_name)" >> $GITHUB_ENV
+
+      # -------------------------------
+      # 6. Docker Build & Push to ACR
+      # -------------------------------
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and Push Docker image
+        run: |
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/myapp:latest .
+          docker push ${{ env.ACR_LOGIN_SERVER }}/myapp:latest
+
+      # -------------------------------
+      # 7. ACA 更新 (最新イメージ反映)
+      # -------------------------------
+      - name: Update Container App
+        run: |
+          az containerapp update \
+            --name ${{ env.ACA_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_LOGIN_SERVER }}/myapp:latest
