@@ -42,20 +42,31 @@ resource "azurerm_container_app" "app" {
   template {
     container {
       name   = "myapp"
-      image  = "nginx:latest"
+      image  = "${azurerm_container_registry.acr.login_server}/myapp:latest"
       cpu    = 0.25
       memory = "0.5Gi"
+      env {
+        name  = "PORT"
+        value = "8080"
+      }
     }
   }
 
   ingress {
     external_enabled = true
-    target_port      = 80
+    target_port      = 8080
+
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
   }
-  traffic_weight {
-    latest_revision = true
-    percentage      = 100
+
+  registry {
+    server = azurerm_container_registry.acr.login_server
+    # username/password属性は不要です
   }
+
   tags = {
     environment = "dev"
   }
