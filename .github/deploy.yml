@@ -15,18 +15,22 @@ jobs:
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
     steps:
+      # 1️⃣ リポジトリをチェックアウト
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2️⃣ Terraform セットアップ
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: "1.6.0"
 
+      # 3️⃣ Terraform 初期化
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
 
+      # 4️⃣ 既存 RG の存在確認
       - name: Check if RG exists in Azure
         id: rg-check
         run: |
@@ -36,25 +40,28 @@ jobs:
             echo "RG_EXISTS=false" >> $GITHUB_ENV
           fi
 
+      # 5️⃣ Terraform state に RG がない場合だけ import
       - name: Import existing RG if needed
         if: env.RG_EXISTS == 'true'
         working-directory: terraform
         run: |
-          # Terraform state にない場合だけ import
           if ! terraform state list | grep -q azurerm_resource_group.rg; then
             terraform import azurerm_resource_group.rg /subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/aca-rg
           fi
 
+      # 6️⃣ Terraform Apply（初回作成 or 差分反映）
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve
 
+      # 7️⃣ Azure Container Registry ログイン
       - name: Azure Container Registry Login
         working-directory: terraform
         run: |
           ACR_NAME=$(terraform output -raw acr_login_server | cut -d '.' -f1)
           az acr login --name $ACR_NAME
 
+      # 8️⃣ Docker イメージビルド＆プッシュ
       - name: Build and Push Docker Image
         working-directory: .
         run: |
@@ -62,6 +69,7 @@ jobs:
           docker build -t $IMAGE_NAME .
           docker push $IMAGE_NAME
 
+      # 9️⃣ Container App 更新（イメージ差し替え）
       - name: Update Container App
         working-directory: terraform
         run: |
