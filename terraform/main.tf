@@ -1,3 +1,4 @@
+// ...existing code...
 terraform {
   required_version = ">= 1.9.5"
 
@@ -39,6 +40,7 @@ resource "azurerm_container_app" "app" {
   container_app_environment_id = azurerm_container_app_environment.env.id
   revision_mode                = "Single"
 
+  # identity は残しておいても問題ありません（将来的にマネージドIDを使う場合に有用）
   identity {
     type = "SystemAssigned"
   }
@@ -66,8 +68,17 @@ resource "azurerm_container_app" "app" {
     }
   }
 
+  # 管理者ユーザー方式で認証（password は secret を介して渡す）
   registry {
-    server = azurerm_container_registry.acr.login_server
+    server               = azurerm_container_registry.acr.login_server
+    username             = azurerm_container_registry.acr.admin_username
+    password_secret_name = "acr-admin-password"
+  }
+
+  # シークレットとして ACR の admin password を渡す（stateには含まれます）
+  secret {
+    name  = "acr-admin-password"
+    value = azurerm_container_registry.acr.admin_password
   }
 
   tags = {
@@ -75,16 +86,8 @@ resource "azurerm_container_app" "app" {
   }
 }
 
-# Container App のマネージドID に AcrPull ロールを付与
-resource "azurerm_role_assignment" "acr_pull" {
-  scope                = azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_container_app.app.identity[0].principal_id
-
-  # role assignment の競合を避けるため明示的な依存を設定
-  depends_on = [azurerm_container_app.app, azurerm_container_registry.acr]
-}
-
+# （既存の role_assignment は削除）
+# ...existing code...
 output "acr_login_server" {
   value = azurerm_container_registry.acr.login_server
 }
@@ -100,3 +103,4 @@ output "container_app_rg" {
 output "container_app_env_id" {
   value = azurerm_container_app_environment.env.id
 }
+// ...existing code...
