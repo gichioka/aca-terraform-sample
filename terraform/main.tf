@@ -11,7 +11,6 @@ terraform {
 
 provider "azurerm" {
   features {}
-  subscription_id = "7e18b982-9600-4203-966d-41ecbbe194e8"
 }
 
 resource "azurerm_resource_group" "rg" {
@@ -39,6 +38,10 @@ resource "azurerm_container_app" "app" {
   container_app_environment_id = azurerm_container_app_environment.env.id
   revision_mode                = "Single"
 
+  identity {
+    type = "SystemAssigned"
+  }
+
   template {
     container {
       name   = "myapp"
@@ -63,19 +66,22 @@ resource "azurerm_container_app" "app" {
   }
 
   registry {
-    server                   = azurerm_container_registry.acr.login_server
-    username                 = azurerm_container_registry.acr.admin_username
-    password_secret_name     = "acr-password"
-  }
-
-  secret {
-    name  = "acr-password"
-    value = azurerm_container_registry.acr.admin_password
+    server = azurerm_container_registry.acr.login_server
   }
 
   tags = {
     environment = "dev"
   }
+}
+
+# Container App のマネージドID に AcrPull ロールを付与
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_container_app.app.identity[0].principal_id
+
+  # role assignment の競合を避けるため明示的な依存を設定
+  depends_on = [azurerm_container_app.app, azurerm_container_registry.acr]
 }
 
 output "acr_login_server" {
