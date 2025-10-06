@@ -19,18 +19,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2️⃣ Terraform セットアップ
+      # 2️⃣ Azure CLI ログイン
+      - name: Azure CLI Login
+        run: |
+          az login --service-principal -u ${{ secrets.AZURE_CLIENT_ID }} -p ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
+
+      # 3️⃣ Terraform セットアップ
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: "1.6.0"
 
-      # 3️⃣ Terraform 初期化
+      # 4️⃣ Terraform 初期化
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
 
-      # 4️⃣ 既存 RG の存在確認
+      # 5️⃣ 既存 RG の存在確認
       - name: Check if RG exists in Azure
         id: rg-check
         run: |
@@ -40,7 +45,7 @@ jobs:
             echo "RG_EXISTS=false" >> $GITHUB_ENV
           fi
 
-      # 5️⃣ Terraform state に RG がない場合だけ import
+      # 6️⃣ Terraform state に RG がない場合だけ import
       - name: Import existing RG if needed
         if: env.RG_EXISTS == 'true'
         working-directory: terraform
@@ -49,33 +54,73 @@ jobs:
             terraform import azurerm_resource_group.rg /subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/aca-rg
           fi
 
-      # 6️⃣ Terraform Apply（初回作成 or 差分反映）
+      # 7️⃣ 既存 ACR の存在確認
+      - name: Check if ACR exists in Azure
+        id: acr-check
+        run: |
+          if az acr show --name myacaregistry1234 --resource-group aca-rg &> /dev/null; then
+            echo "ACR_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "ACR_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      # 8️⃣ Terraform state に ACR がない場合だけ import
+      - name: Import existing ACR if needed
+        if: env.ACR_EXISTS == 'true'
+        working-directory: terraform
+        run: |
+          if ! terraform state list | grep -q azurerm_container_registry.acr; then
+            terraform import azurerm_container_registry.acr /subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/aca-rg/providers/Microsoft.ContainerRegistry/registries/myacaregistry1234
+          fi
+
+      # 9️⃣ 既存 Container App Environment の存在確認
+      - name: Check if Container App Environment exists in Azure
+        id: env-check
+        run: |
+          if az containerapp env show --name myapp-env --resource-group aca-rg &> /dev/null; then
+            echo "ENV_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "ENV_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      # 10️⃣ Terraform state に Container App Environment がない場合だけ import
+      - name: Import existing Container App Environment if needed
+        if: env.ENV_EXISTS == 'true'
+        working-directory: terraform
+        run: |
+          if ! terraform state list | grep -q azurerm_container_app_environment.env; then
+            terraform import azurerm_container_app_environment.env /subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/aca-rg/providers/Microsoft.App/managedEnvironments/myapp-env
+          fi
+
+      # 11️⃣ Terraform Apply（初回作成 or 差分反映）
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve
 
-      # 7️⃣ Azure Container Registry ログイン
+      # 12️⃣ Azure Container Registry ログイン
       - name: Azure Container Registry Login
         working-directory: terraform
         run: |
           ACR_NAME=$(terraform output -raw acr_login_server | cut -d '.' -f1)
-          az acr login --name $ACR_NAME
+          az acr login --name $ACR_NAME || { echo "ACR login failed"; exit 1; }
 
-      # 8️⃣ Docker イメージビルド＆プッシュ
+      # 13️⃣ Dockerfile の存在確認
+      - name: Check for Dockerfile
+        run: |
+          if [ ! -f Dockerfile ]; then
+            echo "Error: Dockerfile not found in repository root"
+            exit 1
+          fi
+
+      # 14️⃣ Docker イメージビルド＆プッシュ
       - name: Build and Push Docker Image
         working-directory: .
         run: |
           IMAGE_NAME=$(terraform output -raw acr_login_server)/myapp:latest
-          docker build -t $IMAGE_NAME .
-          docker push $IMAGE_NAME
+          docker build -t $IMAGE_NAME . || { echo "Docker build failed"; exit 1; }
+          docker push $IMAGE_NAME || { echo "Docker push failed"; exit 1; }
 
-      # 9️⃣ Container App 更新（イメージ差し替え）
-      - name: Update Container App
+      # 15️⃣ Container App イメージ更新（Terraform）
+      - name: Update Container App Image with Terraform
         working-directory: terraform
-        run: |
-          APP_NAME=$(terraform output -raw container_app_name)
-          RG_NAME=$(terraform output -raw container_app_rg)
-          az containerapp update \
-            --name $APP_NAME \
-            --resource-group $RG_NAME \
-            --image $(terraform output -raw acr_login_server)/myapp:latest
+        run: terraform apply -auto-approve -var "image_tag=latest"
