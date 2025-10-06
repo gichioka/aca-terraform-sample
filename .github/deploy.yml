@@ -1,10 +1,21 @@
-
 name: ACA Deploy
 
 on:
   push:
     branches:
       - main
+
+env:
+  RESOURCE_GROUP: aca-rg
+  CONTAINER_APP: myapp
+  ACR_NAME: myacaregistry1234
+  IMAGE_NAME: myapp
+  IMAGE_TAG: latest
+  LOCATION: japaneast
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
@@ -19,34 +30,68 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Set subscription (optional)
+        run: |
+          if [ -n "${{ secrets.AZURE_SUBSCRIPTION_ID }}" ]; then
+            az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          fi
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.9.5"
+          terraform_version: 1.9.5
 
-      - name: Terraform Init
-        working-directory: terraform
-        run: terraform init
+      - name: Terraform init
+        run: terraform -chdir=terraform init
 
-      - name: Ensure RG imported to state if exists
-        working-directory: terraform
+      - name: Import existing Azure resources into Terraform state if needed
         run: |
-          if az group show -n aca-rg &> /dev/null; then
-            if ! terraform state list | grep -q '^azurerm_resource_group.rg$'; then
-              terraform import azurerm_resource_group.rg /subscriptions/$(az account show --query id -o tsv)/resourceGroups/aca-rg
+          set -euo pipefail
+          SUBSCRIPTION_ID="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          RG="${{ env.RESOURCE_GROUP }}"
+          ACR="${{ env.ACR_NAME }}"
+          ENV_NAME="myapp-env"
+          APP="${{ env.CONTAINER_APP }}"
+
+          # helper to check terraform state presence
+          has_state() { terraform -chdir=terraform state list 2>/dev/null | grep -q "^$1$" || return 1; }
+
+          # Resource Group
+          if az group show -n "$RG" >/dev/null 2>&1; then
+            if ! has_state "azurerm_resource_group.rg"; then
+              terraform -chdir=terraform import azurerm_resource_group.rg /subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}
+            fi
+          fi
+
+          # Container Registry
+          if az acr show -n "$ACR" -g "$RG" >/dev/null 2>&1; then
+            if ! has_state "azurerm_container_registry.acr"; then
+              terraform -chdir=terraform import azurerm_container_registry.acr /subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.ContainerRegistry/registries/${ACR}
+            fi
+          fi
+
+          # Container App Environment (managedEnvironment)
+          if az resource show --id /subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.App/managedEnvironments/${ENV_NAME} >/dev/null 2>&1; then
+            if ! has_state "azurerm_container_app_environment.env"; then
+              terraform -chdir=terraform import azurerm_container_app_environment.env /subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.App/managedEnvironments/${ENV_NAME}
+            fi
+          fi
+
+          # Container App
+          if az containerapp show -n "$APP" -g "$RG" >/dev/null 2>&1; then
+            if ! has_state "azurerm_container_app.app"; then
+              terraform -chdir=terraform import azurerm_container_app.app /subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RG}/providers/Microsoft.App/containerApps/${APP}
             fi
           fi
 
       - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve
+        run: terraform -chdir=terraform apply -auto-approve
 
-      - name: Get Terraform Outputs
-        working-directory: terraform
+      - name: Get Terraform outputs
         run: |
-          echo "ACR_SERVER=$(terraform output -raw acr_login_server)" >> $GITHUB_ENV
-          echo "APP_NAME=$(terraform output -raw container_app_name)" >> $GITHUB_ENV
-          echo "RG_NAME=$(terraform output -raw container_app_rg)" >> $GITHUB_ENV
+          echo "ACR_SERVER=$(terraform -chdir=terraform output -raw acr_login_server)" >> $GITHUB_ENV
+          echo "APP_NAME=$(terraform -chdir=terraform output -raw container_app_name)" >> $GITHUB_ENV
+          echo "RG_NAME=$(terraform -chdir=terraform output -raw container_app_rg)" >> $GITHUB_ENV
 
       - name: Login to ACR
         run: |
@@ -57,7 +102,7 @@ jobs:
       - name: Build and Push Docker Image
         run: |
           ACR_SERVER=$(terraform -chdir=terraform output -raw acr_login_server)
-          IMAGE="${ACR_SERVER}/myapp:latest"
+          IMAGE="${ACR_SERVER}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
 
@@ -66,4 +111,4 @@ jobs:
           APP_NAME=$(terraform -chdir=terraform output -raw container_app_name)
           RG_NAME=$(terraform -chdir=terraform output -raw container_app_rg)
           ACR_SERVER=$(terraform -chdir=terraform output -raw acr_login_server)
-          az containerapp update --name "$APP_NAME" --resource-group "$RG_NAME" --image "${ACR_SERVER}/myapp:latest"
+          az containerapp update --name "$APP_NAME" --resource-group "$RG_NAME" --image "${ACR_SERVER}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
